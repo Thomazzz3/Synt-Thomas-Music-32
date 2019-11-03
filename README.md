@@ -42,6 +42,10 @@ What have we gained by doing this? Well, the total time of writing a value to th
 ### DAC with DMA
 I've also setup 4 analog inputs to be connected to potentiometers. Just like the audio output, but in reverse, the ADC values are automatically transferred to a buffer to be read at any time. No double buffer required. The same advantages apply as well.
 
+## Development enviornment
+I use Keil uVision 5 for programing and debugging.
+For getting the code on the STM32 I use an ST-Link V2 dongle.
+When the audio sounds wrong I plug the audio cable in my PC and use Audacity to look at the audio waves.
 
 # Work In Progress
 ## more to be added
