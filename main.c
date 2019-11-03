@@ -3,7 +3,7 @@
 #include "stdbool.h"
 #include "math.h"
 
-//=========================================================== interpolate from arduino synth
+//=========================================================== interpolate from earlier arduino synth experiment
 #define SAMPLE_RATE 48000
 struct sampledWave
 {
@@ -16,6 +16,21 @@ struct sampledWave
 };
 
 struct sampledWave sine =
+{
+  32,
+  {
+		0, 3196, 6269, 9102, 11585, 13622, 15136, 16068, 16383, 
+		16068, 15136, 13622, 11585, 9102, 6269, 3196, 0, -3196, 
+		-6269, -9102, -11585, -13622, -15136, -16068, -16383, 
+		-16068, -15136, -13622, -11585, -9102, -6269, -3196
+  },
+  880.0f,
+  0.0f,
+  0,
+  0.0f
+};
+
+struct sampledWave sine2 =
 {
   32,
   {
@@ -73,18 +88,28 @@ int16_t interpolation(struct sampledWave *wave);
 void calcIncreasePerSample(struct sampledWave *wave);
 
 //audio buffer
-#define BUFFER_LENGTH 48*2
-uint16_t audioBuffer[BUFFER_LENGTH];
+#define AUDIO_BUFFER_LENGTH 48*2
+uint16_t audioBuffer[AUDIO_BUFFER_LENGTH];
+
+//ADC sample buffer
+#define ADC_BUFFER_LENGTH 4
+uint16_t ADCSampleBuffer[ADC_BUFFER_LENGTH];
 
 void DMA1_Stream4_IRQHandler(void)								//DMA1 (I2S) interrupt handler
 {							
 	if(DMA1->HISR & DMA_HISR_TCIF4)									//handle: DMA transfer complete
 	{	
+		if(handlePingBuffer)													//if the ping buffer is still busy and the pong buffer handle there was not enough time  
+		{																							//this means your synth calculations take too long
+			//buffer fill indicator
+			GPIOC->ODR |= GPIO_ODR_OD13;
+		}
+		
 		handlePongBuffer = true;
 		DMA1->HIFCR |= DMA_HIFCR_CTCIF4;							//clear flag: DMA transfer complete
 	}
 	else if(DMA1->HISR & DMA_HISR_HTIF4)						//handle: DMA half transfer
-	{
+	{		
 		handlePingBuffer = true;
 		DMA1->HIFCR |= DMA_HIFCR_CHTIF4;							//clear flag: DMA half transfer
 	}
@@ -94,6 +119,7 @@ void DMA1_Stream4_IRQHandler(void)								//DMA1 (I2S) interrupt handler
 	asm("nop");
 }
 
+/*
 uint16_t adcReading = 0;
 
 void ADC_IRQHandler(void)													//ADC interrupt handler
@@ -111,6 +137,7 @@ void ADC_IRQHandler(void)													//ADC interrupt handler
 	asm("nop");
 	asm("nop");
 }
+*/
 
 int16_t calculateSample()
 {
@@ -118,10 +145,10 @@ int16_t calculateSample()
 	
 	//================= cool synth sutff here ===========================
 	
-	output = interpolation(&sine)/5;
-	
-	//output = interpolation(&square);
-	//output += interpolation(&square2)/2;
+	output  = interpolation(&sine)/5;
+	//output += interpolation(&sine2)/5;
+	//output += interpolation(&square)/5;
+	//output += interpolation(&square2)/5;
 	
 	//================= all done for this sample ========================
 	
@@ -136,7 +163,7 @@ void handlePingPongBuffer()
 	
 	if(handlePingBuffer)
 	{
-		for(uint8_t i = 0; i < (BUFFER_LENGTH/4); i++)
+		for(uint8_t i = 0; i < (AUDIO_BUFFER_LENGTH/4); i++)
 		{
 			currentSampleOut = calculateSample();
 			audioBuffer[ i*2     ] = currentSampleOut;
@@ -149,11 +176,11 @@ void handlePingPongBuffer()
 	}
 	if(handlePongBuffer)
 	{
-		for(uint8_t i = 0; i < (BUFFER_LENGTH/4); i++)
+		for(uint8_t i = 0; i < (AUDIO_BUFFER_LENGTH/4); i++)
 		{
 			currentSampleOut = calculateSample();
-			audioBuffer[(BUFFER_LENGTH/2) + (i*2)    ] = currentSampleOut;
-			audioBuffer[(BUFFER_LENGTH/2) + (i*2) + 1] = currentSampleOut;
+			audioBuffer[(AUDIO_BUFFER_LENGTH/2) + (i*2)    ] = currentSampleOut;
+			audioBuffer[(AUDIO_BUFFER_LENGTH/2) + (i*2) + 1] = currentSampleOut;
 		}
 		handlePongBuffer = false;
 	}
@@ -173,6 +200,24 @@ int main()
 	{
 		//this is where the audio buffer is filled
 		handlePingPongBuffer();
+		
+		if(counter >= 100)
+		{
+			//================================================ temporary
+			sine.frequency = (float)(ADCSampleBuffer[0]);
+			calcIncreasePerSample(&sine);
+			sine2.frequency = (float)(ADCSampleBuffer[1]);
+			calcIncreasePerSample(&sine2);
+			square.frequency = (float)(ADCSampleBuffer[2]);
+			calcIncreasePerSample(&square);
+			square2.frequency = (float)(ADCSampleBuffer[3]);
+			calcIncreasePerSample(&square2);
+			
+			//buffer fill indicator reset
+			GPIOC->ODR &= ~GPIO_ODR_OD13;
+			//================================================
+			counter = 0;
+		}
 		
 		/*
 		if(counter == 179)
@@ -356,7 +401,7 @@ void configureDMA(void)
 	
 	DMA1_Stream4->PAR 	=  (uint32_t)(&SPI2->DR);						//set periperal address DMA_SxPAR
 	DMA1_Stream4->M0AR 	=  (uint32_t)audioBuffer;						//set memory adresses DMA_SxMA0R and DMA_SxMA1R
-	DMA1_Stream4->NDTR 	=   BUFFER_LENGTH;									//total number of data items to be transferred DMA_SxNDTR
+	DMA1_Stream4->NDTR 	=   AUDIO_BUFFER_LENGTH;						//total number of data items to be transferred DMA_SxNDTR
 	DMA1_Stream4->CR 	 &=  ~DMA_SxCR_CHSEL;									//Select DMA channel  CHSEL[2:0] DMA_SxCR
 	DMA1_Stream4->CR 	 |=   DMA_SxCR_PL;										//Configure stream priority PL in DMA_SxCR
 			
@@ -373,6 +418,30 @@ void configureDMA(void)
 	
 	__NVIC_SetPriority(DMA1_Stream4_IRQn, 2);								//Set I2S global interrupt priority
 	__NVIC_EnableIRQ(DMA1_Stream4_IRQn);										//Enable I2S global interrupt
+	
+	//============================ Configure DMA for ADC ====================================
+	RCC->AHB1ENR |= RCC_AHB1ENR_DMA2EN;											//Enable DMA2 clock
+	DMA2_Stream0->CR &= ~DMA_SxCR_EN;												//Disable stream
+	while(DMA2_Stream0->CR & DMA_SxCR_EN);									//Wait for stream to stop while(EN)
+	
+	DMA2->LIFCR = 0x0F7D0F7D;																//Clear all flags
+	DMA2->HIFCR = 0x0F7D0F7D;
+	
+	DMA2_Stream0->PAR 	=  (uint32_t)(&ADC1->DR);						//set periperal address
+	DMA2_Stream0->M0AR 	=  (uint32_t)ADCSampleBuffer;				//set memory adresses
+	DMA2_Stream0->NDTR 	=   ADC_BUFFER_LENGTH;							//total number of data items to be transferred
+	DMA2_Stream0->CR 	 &=  ~DMA_SxCR_CHSEL;									//Select DMA channel 0
+	DMA2_Stream0->CR 	 |=   DMA_SxCR_PL_1;									//stream priority high
+	
+	DMA2_Stream0->CR 	 &= ~(DMA_SxCR_DIR);									//direction: periperal to memory 
+	DMA2_Stream0->CR   |= 	DMA_SxCR_MINC;									//Memory increment mode
+	DMA2_Stream0->CR   &= ~(DMA_SxCR_PINC);									//Peripheral fixed mode
+	DMA2_Stream0->CR   &= ~(DMA_SxCR_MBURST | DMA_SxCR_PBURST);	//single transactions 
+	DMA2_Stream0->CR   |= 	DMA_SxCR_MSIZE_0;								//Memory data widths is 16 bit
+	DMA2_Stream0->CR   |= 	DMA_SxCR_PSIZE_0;								//Peripheral data widths is 16 bit 
+	DMA2_Stream0->CR   |= 	DMA_SxCR_CIRC;									//Circular mode
+
+	DMA2_Stream0->CR   |=   DMA_SxCR_EN;										//Activate the stream by setting the EN bit in the DMA_SxCR register.	
 }
 
 void configureADC(void)
@@ -382,21 +451,23 @@ void configureADC(void)
 	
 	ADC1->CR1 &= ~ADC_CR1_RES;			//12 bit resolution
 	ADC1->CR1 |= 	ADC_CR1_SCAN;			//enable scan mode
-	ADC1->CR1 |= 	ADC_CR1_EOCIE;		//end of conversion interrupt enabled
 	ADC1->CR2 &= ~ADC_CR2_ALIGN;		//data right aligned
-	ADC1->CR2 |=	ADC_CR2_EOCS;			//EOC is set after each conversion
+	ADC1->CR2 |=  ADC_CR2_EOCS;			//EOC is set after each conversion
 	ADC1->CR2 |=	ADC_CR2_CONT;			//continuous conversion
+	
+	ADC1->CR2 |= ADC_CR2_DDS;				//keep sending DMA requests (not single)
+	ADC1->CR2 |= ADC_CR2_DMA;				//DMA mode enable
 	
 	ADC1->SMPR2 |= (ADC_SMPR2_SMP1 |		//sampling time is 12 + 480 ADC clock cycles
 									ADC_SMPR2_SMP2 |		//channels 1 to 4
 									ADC_SMPR2_SMP3 |								
 									ADC_SMPR2_SMP4);	
 	
-	//ADC1->SQR1 |=		ADC_SQR1_L_1;					//4 conversions
-	ADC1->SQR3 |=	((ADC_SQR3_SQ1 & 1) |		//the channel scan order is: 1, 2, 3, 4
-								 (ADC_SQR3_SQ2 & 2) |
-								 (ADC_SQR3_SQ3 & 3) |
-								 (ADC_SQR3_SQ4 & 4));
+	ADC1->SQR1 |=	((ADC_BUFFER_LENGTH-1) << ADC_SQR1_L_Pos);					//4 conversions
+	ADC1->SQR3 |=	((1 << ADC_SQR3_SQ1_Pos) |		//the channel scan order is: 1, 2, 3, 4
+								 (2 << ADC_SQR3_SQ2_Pos) |
+								 (3 << ADC_SQR3_SQ3_Pos) |
+								 (4 << ADC_SQR3_SQ4_Pos));
 	
 	ADC->CCR |=			ADC_CCR_ADCPRE;			//ADC prescaler is 8  (84MHZ/8 = 10.5MHz) (max 36MHz)
 	
@@ -406,8 +477,8 @@ void configureADC(void)
 	
 	
 	
-	__NVIC_SetPriority(ADC_IRQn, 4);		//Set ADC global interrupt priority
-	__NVIC_EnableIRQ(ADC_IRQn);					//Enable ADC global interrupt	
+	//__NVIC_SetPriority(ADC_IRQn, 4);		//Set ADC global interrupt priority
+	//__NVIC_EnableIRQ(ADC_IRQn);					//Enable ADC global interrupt	
 }
 
 void calcIncreasePerSample(struct sampledWave *wave)
