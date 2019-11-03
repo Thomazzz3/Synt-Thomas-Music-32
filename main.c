@@ -1,75 +1,76 @@
 #include "stm32f401xc.h"
+#include "stdlib.h"
 #include "stdint.h"
 #include "stdbool.h"
 #include "math.h"
 
-//=========================================================== interpolate from earlier arduino synth experiment
 #define SAMPLE_RATE 48000
-struct sampledWave
+
+typedef struct
 {
-  uint8_t waveSize;
-  int16_t wave[32];
-  float frequency;
-  float increasePerSample;
+  uint8_t size;
+  int16_t table[32];
+}waveTable;
+
+typedef struct
+{
+  waveTable* wave;
+  uint32_t frequency;
+  uint32_t increasePerSample;
   uint8_t currentSample;
-  float remainder;
+  uint16_t remainder;
+}sampledWave;
+
+waveTable sine32 =
+{
+	32,
+  {
+		0, 3196, 6269, 9102, 11585, 13622, 15136, 16068, 16383,
+		16068, 15136, 13622, 11585, 9102, 6269, 3196, 0, -3196,
+		-6269, -9102, -11585, -13622, -15136, -16068, -16383,
+		-16068, -15136, -13622, -11585, -9102, -6269, -3196
+  }
 };
 
-struct sampledWave sine =
+waveTable triangle =
 {
-  32,
+	2,
   {
-		0, 3196, 6269, 9102, 11585, 13622, 15136, 16068, 16383, 
-		16068, 15136, 13622, 11585, 9102, 6269, 3196, 0, -3196, 
-		-6269, -9102, -11585, -13622, -15136, -16068, -16383, 
-		-16068, -15136, -13622, -11585, -9102, -6269, -3196
-  },
+		16383, -16383
+  }
+};
+
+sampledWave sineWave =
+{
+  &sine32,
   880.0f,
   0.0f,
   0,
   0.0f
 };
 
-struct sampledWave sine2 =
+sampledWave triangleWave =
 {
-  32,
-  {
-		0, 3196, 6269, 9102, 11585, 13622, 15136, 16068, 16383, 
-		16068, 15136, 13622, 11585, 9102, 6269, 3196, 0, -3196, 
-		-6269, -9102, -11585, -13622, -15136, -16068, -16383, 
-		-16068, -15136, -13622, -11585, -9102, -6269, -3196
-  },
+  &triangle,
   880.0f,
   0.0f,
   0,
   0.0f
 };
 
-struct sampledWave square =
+sampledWave sawWave =
 {
-  32,
-  {
-		-8000, -7000, -6000, -5000, -4000, -3000, -2000, -1000,     
-		    0,  1000,  2000,  3000,  4000,  5000,  6000,  7000,
-		 8000,  7000,  6000,  5000,  4000,  3000,  2000,  1000,     
-		    0, -1000, -2000, -3000, -4000, -5000, -6000, -7000,		
-  },
-  440.0f,
+  &triangle,
+  880.0f,
   0.0f,
   0,
   0.0f
 };
 
-struct sampledWave square2 =
+sampledWave sawReverseWave =
 {
-  32,
-  {
-		-8000, -7000, -6000, -5000, -4000, -3000, -2000, -1000,     
-		    0,  1000,  2000,  3000,  4000,  5000,  6000,  7000,
-		 8000,  7000,  6000,  5000,  4000,  3000,  2000,  1000,     
-		    0, -1000, -2000, -3000, -4000, -5000, -6000, -7000,		
-  },
-  440.0f,
+  &triangle,
+  880.0f,
   0.0f,
   0,
   0.0f
@@ -84,8 +85,11 @@ void configureGPIO(void);
 void configureI2S(void);
 void configureDMA(void);
 void configureADC(void);
-int16_t interpolation(struct sampledWave *wave);
-void calcIncreasePerSample(struct sampledWave *wave);
+
+void calcIncreasePerSample(sampledWave *wave);
+int16_t linearInterpolationCont(sampledWave *wave);
+int16_t linearInterpolationDiscont(sampledWave *wave);
+
 
 //audio buffer
 #define AUDIO_BUFFER_LENGTH 48*2
@@ -94,6 +98,7 @@ uint16_t audioBuffer[AUDIO_BUFFER_LENGTH];
 //ADC sample buffer
 #define ADC_BUFFER_LENGTH 4
 uint16_t ADCSampleBuffer[ADC_BUFFER_LENGTH];
+
 
 void DMA1_Stream4_IRQHandler(void)								//DMA1 (I2S) interrupt handler
 {							
@@ -113,31 +118,7 @@ void DMA1_Stream4_IRQHandler(void)								//DMA1 (I2S) interrupt handler
 		handlePingBuffer = true;
 		DMA1->HIFCR |= DMA_HIFCR_CHTIF4;							//clear flag: DMA half transfer
 	}
-	
-	asm("nop");//delete
-	asm("nop");
-	asm("nop");
 }
-
-/*
-uint16_t adcReading = 0;
-
-void ADC_IRQHandler(void)													//ADC interrupt handler
-{							
-	if(ADC1->SR & ADC_SR_EOC)												//handle: ADC end of conversion
-	{
-		adcReading =	ADC1->DR;
-		sine.frequency = (float)(adcReading/5);
-		calcIncreasePerSample(&sine);
-
-		ADC1->SR &= ~ADC_SR_EOC;											//clear flag: DMA transfer complete
-	}
-	
-	asm("nop");//delete
-	asm("nop");
-	asm("nop");
-}
-*/
 
 int16_t calculateSample()
 {
@@ -145,10 +126,18 @@ int16_t calculateSample()
 	
 	//================= cool synth sutff here ===========================
 	
-	output  = interpolation(&sine)/5;
-	//output += interpolation(&sine2)/5;
-	//output += interpolation(&square)/5;
-	//output += interpolation(&square2)/5;
+	//output = (int16_t)rand()/5;
+	
+	
+	output = linearInterpolationCont(&sineWave)/5;
+	output += linearInterpolationCont(&triangleWave)/5;
+	
+	if(ADCSampleBuffer[2] > 15)
+	{
+		output += linearInterpolationDiscont(&sawWave)/5;
+	}
+	output += ((int16_t)rand() * (ADCSampleBuffer[3]))/ 0xFFFF;
+
 	
 	//================= all done for this sample ========================
 	
@@ -187,15 +176,15 @@ void handlePingPongBuffer()
 }
 
 int main()
-{		
+{	
 	configureSystemClock();
 	configureGPIO();
 	configureI2S();
 	configureDMA();
 	configureADC();
 	
-	calcIncreasePerSample(&sine);
-	calcIncreasePerSample(&square);
+	//calcIncreasePerSample(&sine);
+	//calcIncreasePerSample(&square);
 	while(1)
 	{
 		//this is where the audio buffer is filled
@@ -204,14 +193,14 @@ int main()
 		if(counter >= 100)
 		{
 			//================================================ temporary
-			sine.frequency = (float)(ADCSampleBuffer[0]);
-			calcIncreasePerSample(&sine);
-			sine2.frequency = (float)(ADCSampleBuffer[1]);
-			calcIncreasePerSample(&sine2);
-			square.frequency = (float)(ADCSampleBuffer[2]);
-			calcIncreasePerSample(&square);
-			square2.frequency = (float)(ADCSampleBuffer[3]);
-			calcIncreasePerSample(&square2);
+			sineWave.frequency = (ADCSampleBuffer[0]<<16);
+			calcIncreasePerSample(&sineWave);
+			triangleWave.frequency = (ADCSampleBuffer[1]<<16);
+			calcIncreasePerSample(&triangleWave);
+			sawWave.frequency = (ADCSampleBuffer[2]<<16);
+			calcIncreasePerSample(&sawWave);
+			sawReverseWave.frequency = (ADCSampleBuffer[3]<<16);
+			calcIncreasePerSample(&sawReverseWave);
 			
 			//buffer fill indicator reset
 			GPIOC->ODR &= ~GPIO_ODR_OD13;
@@ -447,77 +436,138 @@ void configureDMA(void)
 void configureADC(void)
 {
 	//============================ Configure ADC ====================================
-	RCC->APB2ENR |= RCC_APB2ENR_ADC1EN;		//ADC1 clock enable
+	RCC->APB2ENR 	|= RCC_APB2ENR_ADC1EN;			//ADC1 clock enable
 	
-	ADC1->CR1 &= ~ADC_CR1_RES;			//12 bit resolution
-	ADC1->CR1 |= 	ADC_CR1_SCAN;			//enable scan mode
-	ADC1->CR2 &= ~ADC_CR2_ALIGN;		//data right aligned
-	ADC1->CR2 |=  ADC_CR2_EOCS;			//EOC is set after each conversion
-	ADC1->CR2 |=	ADC_CR2_CONT;			//continuous conversion
+	ADC1->CR1 		&= 	 ~ADC_CR1_RES;					//12 bit resolution
+	ADC1->CR1 		|= 		ADC_CR1_SCAN;					//enable scan mode
+	ADC1->CR2 		&=   ~ADC_CR2_ALIGN;				//data right aligned
+	ADC1->CR2 		|=  	ADC_CR2_EOCS;					//EOC is set after each conversion
+	ADC1->CR2 		|=		ADC_CR2_CONT;					//continuous conversion
 	
-	ADC1->CR2 |= ADC_CR2_DDS;				//keep sending DMA requests (not single)
-	ADC1->CR2 |= ADC_CR2_DMA;				//DMA mode enable
+	ADC1->CR2 		|= 		ADC_CR2_DDS;					//keep sending DMA requests (not single)
+	ADC1->CR2 		|= 		ADC_CR2_DMA;					//DMA mode enable
 	
-	ADC1->SMPR2 |= (ADC_SMPR2_SMP1 |		//sampling time is 12 + 480 ADC clock cycles
-									ADC_SMPR2_SMP2 |		//channels 1 to 4
-									ADC_SMPR2_SMP3 |								
-									ADC_SMPR2_SMP4);	
+	ADC1->SMPR2 	|=   (ADC_SMPR2_SMP1 |			//sampling time is 12 + 480 ADC clock cycles
+											ADC_SMPR2_SMP2 |			//channels 1 to 4
+											ADC_SMPR2_SMP3 |								
+											ADC_SMPR2_SMP4);	
 	
-	ADC1->SQR1 |=	((ADC_BUFFER_LENGTH-1) << ADC_SQR1_L_Pos);					//4 conversions
-	ADC1->SQR3 |=	((1 << ADC_SQR3_SQ1_Pos) |		//the channel scan order is: 1, 2, 3, 4
-								 (2 << ADC_SQR3_SQ2_Pos) |
-								 (3 << ADC_SQR3_SQ3_Pos) |
-								 (4 << ADC_SQR3_SQ4_Pos));
+	ADC1->SQR1 		|=	((ADC_BUFFER_LENGTH-1) << ADC_SQR1_L_Pos);		//4 conversions
+	ADC1->SQR3 		|=	((1 << ADC_SQR3_SQ1_Pos) |										//the channel scan order is: 1, 2, 3, 4
+										 (2 << ADC_SQR3_SQ2_Pos) |
+										 (3 << ADC_SQR3_SQ3_Pos) |
+										 (4 << ADC_SQR3_SQ4_Pos));
 	
-	ADC->CCR |=			ADC_CCR_ADCPRE;			//ADC prescaler is 8  (84MHZ/8 = 10.5MHz) (max 36MHz)
-	
-	
-	ADC1->CR2 |= 	ADC_CR2_ADON;			//enable ADC
-	ADC1->CR2 |= ADC_CR2_SWSTART;		//start conversion of regular channels 
+	ADC->CCR 			|=	  ADC_CCR_ADCPRE;				//ADC prescaler is 8  (84MHZ/8 = 10.5MHz) (max 36MHz)
 	
 	
-	
-	//__NVIC_SetPriority(ADC_IRQn, 4);		//Set ADC global interrupt priority
-	//__NVIC_EnableIRQ(ADC_IRQn);					//Enable ADC global interrupt	
+	ADC1->CR2 		|= 		ADC_CR2_ADON;					//enable ADC
+	ADC1->CR2 		|= 		ADC_CR2_SWSTART;			//start conversion of regular channels 
 }
 
-void calcIncreasePerSample(struct sampledWave *wave)
+void calcIncreasePerSample(sampledWave *inputWave)
 {
-  wave->increasePerSample = (wave->frequency * wave->waveSize) / SAMPLE_RATE;
+	inputWave->increasePerSample = ((uint64_t)inputWave->frequency * inputWave->wave->size) / SAMPLE_RATE;		//16q16 = (16q16 * uint8) / uint16_t
 }
 
-
-int16_t interpolation(struct sampledWave *wave)
+int16_t linearInterpolationCont(sampledWave *inputWave)
 {
   //update current sample
-  float newSampleNr = wave->increasePerSample + wave->remainder;
+  uint32_t newSampleNr = inputWave->increasePerSample + inputWave->remainder;				//16q16 = 16q16 + 0q16
   
   //increase current sample (and ignore remainder)
-  wave->currentSample += (uint8_t)newSampleNr;
+  inputWave->currentSample += (uint8_t)(newSampleNr >> 16);										//uint8_t	+= (16q16 >> 16)
 
   //if current sample falls out of the wave size, correct it
-  while(wave->currentSample >= wave->waveSize)
+  while(inputWave->currentSample >= inputWave->wave->size)														//uint8_t >= uint8_t
   {
-    wave->currentSample -= wave->waveSize;
+    inputWave->currentSample -= inputWave->wave->size;																//uint8_t -= uint8_t
   }
 
   //update remainder
-  wave->remainder = fmodf(newSampleNr, 1);
+  inputWave->remainder = (newSampleNr & 0x0000FFFF);															//uint16_t = (16q16 masked to 0q16) (maybe casting is better???)
 
   //================================ interpolate
-  float slope;
+  int32_t slope;
   
 	//normal interpolation
-  if(wave->currentSample != wave->waveSize - 1)
+  if(inputWave->currentSample != inputWave->wave->size - 1)														//uint8_t != uint8_t
   {
-    slope = (wave->wave[wave->currentSample] - wave->wave[wave->currentSample+1]) / 32768.0f;
+    slope = inputWave->wave->table[inputWave->currentSample] - inputWave->wave->table[inputWave->currentSample+1];						//int32_t = int16_t - int16_t
   }
 	//current sample is the last one in the wave. interpolate between last and first sample 
   else
   {
-    slope = (wave->wave[wave->currentSample] - wave->wave[0]) / 32768.0f;
+    slope = inputWave->wave->table[inputWave->currentSample] - inputWave->wave->table[0];																//int32_t = int16_t - int16_t
   }
 
-  return wave->wave[wave->currentSample] - ((slope * wave->remainder) * 32768);
+  return inputWave->wave->table[inputWave->currentSample] - ((slope * inputWave->remainder)>>16);			//int16_t = int16_t - (int32 * uint16_t)!!!!!!!!!!!!!!!!!!!!!!!!! shifting
 }
 
+int16_t linearInterpolationDiscont(sampledWave *inputWave)
+{
+  //update current sample
+  uint32_t newSampleNr = inputWave->increasePerSample + inputWave->remainder;				//16q16 = 16q16 + 0q16
+  
+  //increase current sample (and ignore remainder)
+  inputWave->currentSample += (uint8_t)(newSampleNr >> 16);										//uint8_t	+= (16q16 >> 16)
+
+  //if current sample falls out of the wave size, correct it
+  while(inputWave->currentSample >= inputWave->wave->size)														//uint8_t >= uint8_t
+  {
+    inputWave->currentSample -= inputWave->wave->size;																//uint8_t -= uint8_t
+  }
+
+  //update remainder
+  inputWave->remainder = (newSampleNr & 0x0000FFFF);															//uint16_t = (16q16 masked to 0q16) (maybe casting is better???)
+
+  //================================ interpolate
+  int32_t slope;
+  
+	//normal interpolation
+  if(inputWave->currentSample != inputWave->wave->size - 1)														//uint8_t != uint8_t
+  {
+    slope = inputWave->wave->table[inputWave->currentSample] - inputWave->wave->table[inputWave->currentSample+1];						//int32_t = int16_t - int16_t
+  }
+	//current sample is the last one in the wave. interpolate between last and first sample 
+  else
+  {
+    slope = inputWave->wave->table[0] - inputWave->wave->table[1];																//int32_t = int16_t - int16_t
+  }
+
+  return inputWave->wave->table[inputWave->currentSample] - ((slope * inputWave->remainder)>>16);			//int16_t = int16_t - (int32 * uint16_t)!!!!!!!!!!!!!!!!!!!!!!!!! shifting
+}
+
+int16_t squartWaveGenerator(sampledWave *inputWave, uint8_t pwm)
+{
+  //update current sample
+  uint32_t newSampleNr = inputWave->increasePerSample + inputWave->remainder;				//16q16 = 16q16 + 0q16
+  
+  //increase current sample (and ignore remainder)
+  inputWave->currentSample += (uint8_t)(newSampleNr >> 16);										//uint8_t	+= (16q16 >> 16)
+
+  //if current sample falls out of the wave size, correct it
+  while(inputWave->currentSample >= inputWave->wave->size)														//uint8_t >= uint8_t
+  {
+    inputWave->currentSample -= inputWave->wave->size;																//uint8_t -= uint8_t
+  }
+
+  //update remainder
+  inputWave->remainder = (newSampleNr & 0x0000FFFF);															//uint16_t = (16q16 masked to 0q16) (maybe casting is better???)
+
+  //================================ interpolate
+  int32_t slope;
+  
+	//normal interpolation
+  if(inputWave->currentSample != inputWave->wave->size - 1)														//uint8_t != uint8_t
+  {
+    slope = inputWave->wave->table[inputWave->currentSample] - inputWave->wave->table[inputWave->currentSample+1];						//int32_t = int16_t - int16_t
+  }
+	//current sample is the last one in the wave. interpolate between last and first sample 
+  else
+  {
+    slope = inputWave->wave->table[0] - inputWave->wave->table[1];																//int32_t = int16_t - int16_t
+  }
+
+  return inputWave->wave->table[inputWave->currentSample] - ((slope * inputWave->remainder)>>16);			//int16_t = int16_t - (int32 * uint16_t)!!!!!!!!!!!!!!!!!!!!!!!!! shifting
+}
