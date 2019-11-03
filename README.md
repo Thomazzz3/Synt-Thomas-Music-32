@@ -1,7 +1,7 @@
 # Synt-Thomas-Music-32
-## Get hyped!
 I started this as a private project, not intending to publish anything. At some point a thought came to me. "Wouldn't it be nice if there was some kind of framework where I could just start coding a synth in stead of setting up all of the hardware?". From then I decided to make this project public. 
 
+## Get hyped!
 The idea is that you can start coding your synth from any point in the proces and even branch off to a completely different path. Maybe want to add an audio input and turn it into a guitar pedal. Add MIDI input or create your own instrument or sequencer. Add cool effects like a delay... Do what you want!
 
 ### Let me know what you think
@@ -45,3 +45,4 @@ I've also setup 4 analog inputs to be connected to potentiometers. Just like the
 
 # Work In Progress
 ## more to be added
+### Sorry for the messy code. In Keil U5 it looks ok, but in the Github viewer the indentation of some things is messed up. To be fixed. At some point I will also neatly split it up in seperate files.
