@@ -1,105 +1,183 @@
 #include "stm32f401xc.h"
 #include "stdint.h"
 #include "stdbool.h"
+#include "math.h"
 
-bool monoOperation = true;
+//=========================================================== interpolate from arduino synth
+#define SAMPLE_RATE 48000
+struct sampledWave
+{
+  uint8_t waveSize;
+  int16_t wave[32];
+  float frequency;
+  float increasePerSample;
+  uint8_t currentSample;
+  float remainder;
+};
+
+struct sampledWave sine =
+{
+  32,
+  {
+		0, 3196, 6269, 9102, 11585, 13622, 15136, 16068, 16383, 
+		16068, 15136, 13622, 11585, 9102, 6269, 3196, 0, -3196, 
+		-6269, -9102, -11585, -13622, -15136, -16068, -16383, 
+		-16068, -15136, -13622, -11585, -9102, -6269, -3196
+  },
+  880.0f,
+  0.0f,
+  0,
+  0.0f
+};
+
+struct sampledWave square =
+{
+  32,
+  {
+		-8000, -7000, -6000, -5000, -4000, -3000, -2000, -1000,     
+		    0,  1000,  2000,  3000,  4000,  5000,  6000,  7000,
+		 8000,  7000,  6000,  5000,  4000,  3000,  2000,  1000,     
+		    0, -1000, -2000, -3000, -4000, -5000, -6000, -7000,		
+  },
+  440.0f,
+  0.0f,
+  0,
+  0.0f
+};
+
+volatile bool handlePingBuffer = false;
+volatile bool handlePongBuffer = false;
 
 //funftion prototypes
 void configureSystemClock(void);
 void configureGPIO(void);
 void configureI2S(void);
 void configureDMA(void);
+int16_t interpolation(struct sampledWave *wave);
+void calcIncreasePerSample(struct sampledWave *wave);
 
+//audio buffer
 #define BUFFER_LENGTH 48*2
-
-uint16_t audioBuffer[BUFFER_LENGTH] = 
-{	
-	32767,	32767,
-	33836,	33836,
-	34887,	34887,
-	35902,	35902,
-	36863,	36863,
-	37754,	37754,
-	38560,	38560,
-	39266,	39266,
-	39861,	39861,
-	40335,	40335,
-	40680,	40680,
-	40889,	40889,
-	40959,	40959,
-	40889,	40889,
-	40680,	40680,
-	40335,	40335,
-	39861,	39861,
-	39266,	39266,
-	38560,	38560,
-	37754,	37754,
-	36863,	36863,
-	35902,	35902,
-	34887,	34887,
-	33836,	33836,
-	32767,	32767,
-	31698,	31698,
-	30647,	30647,
-	29632,	29632,
-	28671,	28671,
-	27780,	27780,
-	26974,	26974,
-	26268,	26268,
-	25673,	25673,
-	25199,	25199,
-	24854,	24854,
-	24645,	24645,
-	24575,	24575,
-	24645,	24645,
-	24854,	24854,
-	25199,	25199,
-	25673,	25673,
-	26268,	26268,
-	26974,	26974,
-	27780,	27780,
-	28671,	28671,
-	29632,	29632,
-	30647,	30647,
-	31698,	31698
-};
-
-volatile uint16_t count = 0;
+uint16_t audioBuffer[BUFFER_LENGTH];
 
 void DMA1_Stream4_IRQHandler(void) {							//DMA1 (I2S) interrupt handler
 	if(DMA1->HISR & DMA_HISR_TCIF4)									//handle: DMA transfer complete
 	{	
-		count++;
+		handlePongBuffer = true;
 		DMA1->HIFCR |= DMA_HIFCR_CTCIF4;							//clear flag: DMA transfer complete
 	}
 	else if(DMA1->HISR & DMA_HISR_HTIF4)						//handle: DMA half transfer
 	{
-		//count++;
+		handlePingBuffer = true;
 		DMA1->HIFCR |= DMA_HIFCR_CHTIF4;							//clear flag: DMA half transfer
 	}
 	
-	//============================================== Debug led toggle
-	if (count == 1000)
-	{
-		GPIOC->ODR |= GPIO_ODR_OD13;
-	}
-	else if (count == 2000)
-	{
-		GPIOC->ODR &= ~GPIO_ODR_OD13;
-		count = 0;
-	}
-	//============================================== Debug led toggle
+	asm("nop");//delete
+	asm("nop");
+	asm("nop");
 }
+
+int16_t calculateSample()
+{
+	int16_t output;
+	
+	//================= cool synth sutff here ===========================
+	
+	//output = interpolation(&sine);
+	
+	output = interpolation(&square);
+	
+	//================= all done for this sample ========================
+	
+	return output;
+}
+
+uint16_t counter = 0;
+
+void handlePingPongBuffer()
+{
+	int16_t currentSampleOut;
+	
+	if(handlePingBuffer)
+	{
+		for(uint8_t i = 0; i < (BUFFER_LENGTH/4); i++)
+		{
+			currentSampleOut = calculateSample();
+			audioBuffer[ i*2     ] = currentSampleOut;
+			audioBuffer[(i*2) + 1] = currentSampleOut;
+		}
+		
+		counter++;
+		
+		handlePingBuffer = false;
+	}
+	if(handlePongBuffer)
+	{
+		for(uint8_t i = 0; i < (BUFFER_LENGTH/4); i++)
+		{
+			currentSampleOut = calculateSample();
+			audioBuffer[(BUFFER_LENGTH/2) + (i*2)    ] = currentSampleOut;
+			audioBuffer[(BUFFER_LENGTH/2) + (i*2) + 1] = currentSampleOut;
+		}
+		handlePongBuffer = false;
+	}
+}
+
 int main()
 {		
 	configureSystemClock();
 	configureGPIO();
 	configureI2S();
 	configureDMA();
-
+	
+	calcIncreasePerSample(&sine);
+	calcIncreasePerSample(&square);
 	while(1)
 	{
+		//this is where the audio buffer is filled
+		handlePingPongBuffer();
 		
+		if(counter == 179)
+		{
+			square.frequency = 164.81f;
+			calcIncreasePerSample(&square);
+		}
+		else if(counter == 357)
+		{
+			square.frequency = 196;
+			calcIncreasePerSample(&square);
+		}
+		else if(counter == 535)
+		{
+			square.frequency = 246.94f;
+			calcIncreasePerSample(&square);
+		}
+		else if(counter == 714)
+		{
+			square.frequency = 261.63f;
+			calcIncreasePerSample(&square);
+		}
+		else if(counter == 892)
+		{
+			square.frequency = 246.94f;
+			calcIncreasePerSample(&square);
+		}
+		else if(counter == 1071)
+		{
+			square.frequency = 196;
+			calcIncreasePerSample(&square);
+		}
+		else if(counter == 1250)
+		{
+			square.frequency = 164.81f;
+			calcIncreasePerSample(&square);
+		}
+		else if(counter >= 1428)
+		{
+			square.frequency = 130.81f;
+			calcIncreasePerSample(&square);
+			counter = 0;
+		}
 	}
 }
 
@@ -107,7 +185,6 @@ void configureSystemClock(void)													//Configure system clock for 84MHz i
 {
 	//============================ Configure system clock ====================================
 	FLASH->ACR   |= FLASH_ACR_LATENCY; 										//one wait state (fix for PLLRDY flag not enabling)
-	//FLASH->ACR |= FLASH_ACR_PRFTEN;  											// prefetch enable
 	
 	//HSE enable
 	RCC->CR 		 |= RCC_CR_HSEON;													//Enable HSE clock
@@ -131,9 +208,8 @@ void configureSystemClock(void)													//Configure system clock for 84MHz i
 	while((RCC->CFGR & RCC_CFGR_SWS) != (0b10 << RCC_CFGR_SWS_Pos)); //Wait for MUX to switch
 	
 	//============================ Configure I2S clock ====================================
-	/* I2S bitrate = 16 bit * 2 channels * 48kHz = 1,536 MHz
-	 *
-	 */
+	//				I2S bitrate = 16 bit * 2 channels * 48kHz = 1,536 MHz
+
 	 
 	//PLLI2S config
 	RCC->PLLI2SCFGR &= ~(RCC_PLLI2SCFGR_PLLI2SN);						//Reset value to 0
@@ -155,13 +231,14 @@ void configureSystemClock(void)													//Configure system clock for 84MHz i
 
 void configureGPIO(void)
 {	
+	//============================ Configure GPIO ====================================
 	/* PC13 = led
 	 * 
 	 * PB12 = I2S2 WS
 	 * PB13 = I2S2 CK
 	 * PB15 = I2S2 SD
 	 */
-
+	
 	RCC->AHB1ENR   |=   RCC_AHB1ENR_GPIOBEN; 								//enable port B and C		
 	RCC->AHB1ENR   |=   RCC_AHB1ENR_GPIOCEN;			
 	
@@ -197,7 +274,7 @@ void configureI2S(void)																		//Configure system clock for 84MHz in c
 	SPI2->I2SPR 	|=   SPI_I2SPR_ODD;
 	
 	SPI2->I2SCFGR &= ~(SPI_I2SCFGR_CKPOL); 									//clock steady state is low
-	SPI2->I2SCFGR &= ~(SPI_I2SCFGR_I2SSTD);									//I2S phillips standard
+	SPI2->I2SCFGR &= ~(SPI_I2SCFGR_I2SSTD);									//I2S phillips standard	
 	SPI2->I2SCFGR &= ~(SPI_I2SCFGR_DATLEN);									//data length is 16 bit
 	SPI2->I2SCFGR &= ~(SPI_I2SCFGR_CHLEN);									//channel length is 16 bit
 	SPI2->I2SCFGR |= 	 SPI_I2SCFGR_I2SCFG_1;								//master and transmit
@@ -237,3 +314,44 @@ void configureDMA(void)
 	__NVIC_SetPriority(DMA1_Stream4_IRQn, 2);								//Set I2S global interrupt priority
 	__NVIC_EnableIRQ(DMA1_Stream4_IRQn);										//Enable I2S global interrupt
 }
+
+void calcIncreasePerSample(struct sampledWave *wave)
+{
+  wave->increasePerSample = (wave->frequency * wave->waveSize) / SAMPLE_RATE;
+}
+
+
+int16_t interpolation(struct sampledWave *wave)
+{
+  //update current sample
+  float newSampleNr = wave->increasePerSample + wave->remainder;
+  
+  //increase current sample (and ignore remainder)
+  wave->currentSample += (uint8_t)newSampleNr;
+
+  //if current sample falls out of the wave size, correct it
+  while(wave->currentSample >= wave->waveSize)
+  {
+    wave->currentSample -= wave->waveSize;
+  }
+
+  //update remainder
+  wave->remainder = fmodf(newSampleNr, 1);
+
+  //================================ interpolate
+  float slope;
+  
+	//normal interpolation
+  if(wave->currentSample != wave->waveSize - 1)
+  {
+    slope = (wave->wave[wave->currentSample] - wave->wave[wave->currentSample+1]) / 32768.0f;
+  }
+	//current sample is the last one in the wave. interpolate between last and first sample 
+  else
+  {
+    slope = (wave->wave[wave->currentSample] - wave->wave[0]) / 32768.0f;
+  }
+
+  return wave->wave[wave->currentSample] - ((slope * wave->remainder) * 32768);
+}
+
